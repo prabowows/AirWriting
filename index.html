@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Papan Tulis Udara — Air Writing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root{
+    --wood:#6b4226; --wood-dark:#4a2d1a; --wood-light:#8a5a35;
+    --chalk:#f4f1ea; --chalk-dim:#cfc9bb; --accent-yellow:#e8c468;
+    --toolbar-h: 52px;
+  }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+
+  html, body {
+    width:100%; height:100%; overflow:hidden;
+    background:var(--wood-dark);
+    font-family:'Space Grotesk', sans-serif;
+    color:var(--chalk);
+  }
+
+  /* Bingkai kayu — padding tipis di semua sisi */
+  .board-frame {
+    position:fixed; inset:0;
+    display:flex; flex-direction:column;
+    padding: 10px 10px 0;            /* kayu atas & samping */
+    background:
+      repeating-linear-gradient(105deg,
+        var(--wood) 0px, var(--wood) 3px,
+        var(--wood-dark) 3px, var(--wood-dark) 6px);
+    gap:0;
+  }
+
+  /* Canvas area */
+  .board-canvas-wrap {
+    flex:1; position:relative;
+    overflow:hidden;
+    border-radius:4px 4px 0 0;
+    background:#162a20;
+    min-height:0;
+  }
+
+  #outputCanvas {
+    display:block;
+    width:100%; height:100%;
+    object-fit:cover;
+  }
+
+  /* Toolbar bawah — di dalam bingkai kayu, di atas tray */
+  .toolbar {
+    height:var(--toolbar-h);
+    background:
+      repeating-linear-gradient(105deg,
+        var(--wood) 0px, var(--wood) 3px,
+        var(--wood-dark) 3px, var(--wood-dark) 6px);
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:0 14px;
+    border-top: 2px solid rgba(0,0,0,0.35);
+    flex-shrink:0;
+  }
+
+  .toolbar button, .file-btn {
+    appearance:none; border:none; cursor:pointer;
+    background:var(--wood-light); color:var(--chalk);
+    font-family:'Space Grotesk', sans-serif;
+    font-weight:600; font-size:0.78rem;
+    padding:7px 13px; border-radius:7px;
+    box-shadow:0 3px 0 var(--wood-dark);
+    transition:transform 0.08s ease;
+    display:inline-flex; align-items:center; gap:5px;
+    white-space:nowrap; flex-shrink:0;
+  }
+  .toolbar button:active, .file-btn:active {
+    transform:translateY(2px); box-shadow:0 1px 0 var(--wood-dark);
+  }
+  .toolbar button:hover, .file-btn:hover { filter:brightness(1.12); }
+  .file-btn input { display:none; }
+
+  .toolbar-sep {
+    width:1px; height:28px; background:rgba(255,255,255,0.12);
+    flex-shrink:0;
+  }
+
+  .toolbar-hint {
+    font-size:0.7rem; color:rgba(244,241,234,0.55);
+    line-height:1.4; flex:1; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
+  /* Loading overlay */
+  .overlay-status {
+    position:absolute; inset:0;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:14px;
+    background:rgba(15,25,18,0.93); text-align:center; padding:28px;
+  }
+  .overlay-status.hidden { display:none; }
+  .chalk-spinner {
+    width:36px; height:36px; border-radius:50%;
+    border:3px solid rgba(244,241,234,0.15);
+    border-top-color:var(--accent-yellow);
+    animation:spin 0.9s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  #statusText { font-size:0.95rem; color:var(--chalk); max-width:420px; line-height:1.5; }
+  #statusSub  { font-size:0.76rem; color:var(--chalk-dim); max-width:440px; line-height:1.5; }
+
+  a.hidden-download { display:none; }
+
+  @media(max-width:640px){
+    .toolbar { gap:6px; padding:0 8px; }
+    .toolbar button, .file-btn { font-size:0.68rem; padding:6px 9px; }
+    .toolbar-hint { display:none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="board-frame">
+  <div class="board-canvas-wrap">
+    <canvas id="outputCanvas" width="1280" height="720"></canvas>
+    <video id="webcam" playsinline autoplay muted style="display:none"></video>
+    <div class="overlay-status" id="overlayStatus">
+      <div class="chalk-spinner"></div>
+      <p id="statusText">Memuat model deteksi tangan…</p>
+      <p id="statusSub">Izinkan akses kamera saat browser meminta. Halaman harus dibuka lewat <strong>http://localhost</strong> atau <strong>HTTPS</strong>.</p>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <button id="btnBg"   type="button">🖼️ Ganti BG (B)</button>
+    <label class="file-btn">
+      📂 Unggah BG
+      <input type="file" id="bgUpload" accept="image/*" multiple />
+    </label>
+    <div class="toolbar-sep"></div>
+    <button id="btnClear" type="button">🧹 Bersihkan (C)</button>
+    <button id="btnSave"  type="button">💾 Simpan (S)</button>
+    <div class="toolbar-sep"></div>
+    <span class="toolbar-hint">
+      Kanan: 5 jari = Gambar · Kiri ✌️ tahan = Warna &nbsp;|&nbsp;
+      Kiri: 5 jari gerak = Hapus · 5 jari diam = Clear &nbsp;|&nbsp;
+      5+5 diam = Capture
+    </span>
+  </div>
+</div>
+
+<a id="downloadLink" class="hidden-download"></a>
+
+<script type="module">
+import {
+  HandLandmarker,
+  FilesetResolver
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+/* ─── KONFIGURASI ──────────────────────────────────────────────── */
+const CONFIG = {
+  PINCH_THRESHOLD:        40,
+  PINCH_HOLD_DURATION:    600,  // ms tahan pinch sebelum color picker aktif
+  HUE_SENSITIVITY:        0.25,
+  CAPTURE_HOLD_DURATION:  1200,  // ms tahan diam untuk capture
+  CAPTURE_HOLD_TOLERANCE: 22,
+  CLEAR_HOLD_DURATION:    1200,  // ms tahan diam untuk clear page
+  CLEAR_HOLD_TOLERANCE:   18,
+  SMOOTH_BUFFER:          5,
+};
+
+// Ukuran tunggal — tidak ada multi-size lagi
+const DRAW_THICKNESS = 10;   // px ketebalan kapur tangan kanan
+const ERASE_RADIUS   = 50;   // px radius hapus tangan kiri
+
+/* ─── LANDMARK IDs ─────────────────────────────────────────────── */
+const WRIST=0,
+      THUMB_CMC=1, THUMB_MCP=2, THUMB_IP=3,  THUMB_TIP=4,
+      INDEX_MCP=5, INDEX_PIP=6,  INDEX_TIP=8,
+      MIDDLE_MCP=9,MIDDLE_PIP=10,MIDDLE_TIP=12,
+      RING_MCP=13, RING_PIP=14,  RING_TIP=16,
+      PINKY_MCP=17,PINKY_PIP=18, PINKY_TIP=20;
+
+const TIPS=[INDEX_TIP,MIDDLE_TIP,RING_TIP,PINKY_TIP];
+const PIPS=[INDEX_PIP,MIDDLE_PIP,RING_PIP,PINKY_PIP];
+const MCPS=[INDEX_MCP,MIDDLE_MCP,RING_MCP,PINKY_MCP];
+
+// Ambang jarak (dalam satuan koordinat ternormalisasi 0-1)
+// Opsi A: jika rata-rata tip→wrist lebih kecil dari ini → kepalan
+const FIST_THRESHOLD = 0.22;
+
+const CONNECTIONS=[
+  [0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17]
+];
+
+/* ─── WARNA HSV ────────────────────────────────────────────────── */
+function hueToRgb(h){
+  if(h<0) return[245,245,245]; // putih
+  h=((h%360)+360)%360;
+  const c=1,x=1-Math.abs((h/60)%2-1);
+  let r=0,g=0,b=0;
+  if(h<60){r=c;g=x;}else if(h<120){r=x;g=c;}else if(h<180){g=c;b=x;}
+  else if(h<240){g=x;b=c;}else if(h<300){r=x;b=c;}else{r=c;b=x;}
+  return[Math.round(r*255),Math.round(g*255),Math.round(b*255)];
+}
+function hueToName(h){
+  if(h<0) return"Putih";
+  h=((h%360)+360)%360;
+  if(h<15||h>=345)return"Merah"; if(h<45)return"Oranye";
+  if(h<75)return"Kuning"; if(h<150)return"Hijau";
+  if(h<195)return"Cyan"; if(h<255)return"Biru";
+  if(h<285)return"Ungu"; return"Pink";
+}
+function rgba([r,g,b],a=1){return`rgba(${r},${g},${b},${a})`;}
+
+/* ─── FINGER STATE ─────────────────────────────────────────────── */
+
+/**
+ * OPSI A — Deteksi Kepalan (Fist Lock)
+ * Hitung rata-rata jarak semua fingertip ke WRIST (koordinat ternormalisasi).
+ * Kalau semua dekat → tangan mengepal → paksa return 0.
+ *
+ * Jarak dihitung dalam ruang ternormalisasi (0–1) sehingga
+ * tidak terpengaruh resolusi kamera.
+ */
+function isFist(lm){
+  let sumDist = 0;
+  for(const tip of TIPS){
+    const dx = lm[tip].x - lm[WRIST].x;
+    const dy = lm[tip].y - lm[WRIST].y;
+    sumDist += Math.hypot(dx, dy);
+  }
+  const avgDist = sumDist / TIPS.length;
+  return avgDist < FIST_THRESHOLD;
+}
+
+/**
+ * OPSI B — Referensi Ibu Jari: THUMB_TIP vs THUMB_CMC
+ * CMC adalah pangkal jempol (lebih stabil dari IP).
+ * Saat mengepal, jempol melipat ke telapak — posisinya relatif
+ * terhadap CMC berubah secara konsisten.
+ *
+ * Selain itu, tambahkan syarat jarak: jempol dianggap tegak
+ * hanya jika jarak TIP→CMC cukup jauh (tidak sedang terlipat).
+ */
+function isThumbUp(lm, label){
+  // Syarat 1 (Opsi B): bandingkan TIP ke CMC, bukan IP
+  const tipX = lm[THUMB_TIP].x, cmcX = lm[THUMB_CMC].x;
+  const dirOk = (label === "Right") ? tipX < cmcX : tipX > cmcX;
+
+  // Syarat 2: jarak TIP→CMC harus cukup (jempol tidak terlipat rapat)
+  const dx = lm[THUMB_TIP].x - lm[THUMB_CMC].x;
+  const dy = lm[THUMB_TIP].y - lm[THUMB_CMC].y;
+  const dist = Math.hypot(dx, dy);
+  const farEnough = dist > 0.1; // threshold jarak ternormalisasi
+
+  return dirOk && farEnough;
+}
+
+/**
+ * Thumbs-Up Only: ibu jari berdiri, 4 jari lain TERLIPAT.
+ * Digunakan untuk memicu color picker.
+ */
+function isThumbsUpOnly(lm, label){
+  if(!isThumbUp(lm, label)) return false;
+  // Semua 4 fingertip harus di bawah MCP-nya (terlipat)
+  for(let i = 0; i < TIPS.length; i++){
+    if(lm[TIPS[i]].y < lm[MCPS[i]].y) return false;
+  }
+  return true;
+}
+
+function fingersUp(lm, label){
+  // OPSI A: kepalan total → langsung return 0, tidak ada jari yang terhitung
+  if(isFist(lm)) return 0;
+
+  // Hitung 4 jari (telunjuk–kelingking): tip.y < pip.y
+  let n = 0;
+  for(let i = 0; i < TIPS.length; i++){
+    if(lm[TIPS[i]].y < lm[PIPS[i]].y) n++;
+  }
+
+  // OPSI B: ibu jari dengan referensi CMC + syarat jarak
+  if(isThumbUp(lm, label)) n++;
+
+  return n;
+}
+function pinch(lm,fw,fh){
+  const tx=lm[THUMB_TIP].x*fw,ty=lm[THUMB_TIP].y*fh;
+  const ix=lm[INDEX_TIP].x*fw, iy=lm[INDEX_TIP].y*fh;
+  return{dist:Math.hypot(tx-ix,ty-iy),mx:(tx+ix)/2,my:(ty+iy)/2};
+}
+function lmPx(p,fw,fh){return[p.x*fw,p.y*fh];}
+
+/* ─── WMA SMOOTHER ─────────────────────────────────────────────── */
+class WMA{
+  constructor(s){this.s=s;this.bx=[];this.by=[];}
+  update(x,y){this.bx.push(x);this.by.push(y);if(this.bx.length>this.s){this.bx.shift();this.by.shift();}}
+  get(){
+    if(!this.bx.length)return[null,null];
+    let ws=0,xs=0,ys=0;
+    for(let i=0;i<this.bx.length;i++){const w=i+1;ws+=w;xs+=this.bx[i]*w;ys+=this.by[i]*w;}
+    return[Math.round(xs/ws),Math.round(ys/ws)];
+  }
+  reset(){this.bx=[];this.by=[];}
+}
+
+/* ─── CHALK RENDERING ──────────────────────────────────────────── */
+function chalkLine(ctx,pt1,pt2,col,thick){
+  if(!pt1||!pt2)return;
+  const[x1,y1]=pt1,[x2,y2]=pt2;
+  const dist=Math.max(1,Math.hypot(x2-x1,y2-y1));
+  const n=Math.max(Math.round(dist),2);
+  const strands=Math.max(2,Math.floor(thick/3));
+  const half=Math.max(1,Math.floor(thick/4));
+  const rMax=Math.max(2,Math.floor(thick/2));
+  for(let s=0;s<strands;s++){
+    const ox=Math.floor(Math.random()*(2*half+1))-half;
+    const oy=Math.floor(Math.random()*(2*half+1))-half;
+    for(let i=0;i<n;i++){
+      const t=n===1?0:i/(n-1);
+      const px=x1+ox+(x2-x1)*t,py=y1+oy+(y2-y1)*t;
+      const a=0.4+Math.random()*0.6,br=0.7+Math.random()*0.3;
+      const r=Math.max(1,Math.floor(Math.random()*rMax)+1);
+      ctx.fillStyle=rgba([Math.round(col[0]*br),Math.round(col[1]*br),Math.round(col[2]*br)],a);
+      ctx.beginPath();ctx.arc(px,py,r,0,Math.PI*2);ctx.fill();
+    }
+  }
+}
+function chalkEraser(ctx,cx,cy,radius){
+  ctx.save();
+  ctx.globalCompositeOperation="destination-out";
+  const g=ctx.createRadialGradient(cx,cy,radius*0.25,cx,cy,radius);
+  g.addColorStop(0,"rgba(0,0,0,1)");g.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+/* ─── UI HELPERS ───────────────────────────────────────────────── */
+function rrect(ctx,x,y,w,h,r){
+  ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();
+}
+
+function drawPickerUI(ctx,fw,hue,px,py){
+  const bH=28,bY=130,bX=60,bW=fw-120;
+  const whiteW=70;
+  const rainbowX=bX+whiteW, rainbowW=bW-whiteW;
+  // Zona putih → merah (kiri)
+  const gw=ctx.createLinearGradient(bX,0,rainbowX,0);
+  gw.addColorStop(0,"rgba(245,245,245,1)");
+  gw.addColorStop(1,"rgba(255,80,80,1)");
+  ctx.fillStyle=gw; ctx.fillRect(bX,bY,whiteW,bH);
+  // Label "PUTIH"
+  ctx.fillStyle="rgba(80,80,80,0.9)"; ctx.font="11px 'Space Grotesk',sans-serif";
+  ctx.fillText("PUTIH",bX+6,bY+18);
+  // Garis pemisah
+  ctx.fillStyle="rgba(255,255,255,0.7)"; ctx.fillRect(rainbowX-1,bY,2,bH);
+  // Zona rainbow (kanan)
+  const gr=ctx.createLinearGradient(rainbowX,0,rainbowX+rainbowW,0);
+  [0,60,120,180,240,300,360].forEach((h,i,a)=>gr.addColorStop(i/(a.length-1),rgba(hueToRgb(h))));
+  ctx.fillStyle=gr; ctx.fillRect(rainbowX,bY,rainbowW,bH);
+  // Border seluruh bar
+  ctx.strokeStyle="rgba(220,220,220,0.9)"; ctx.lineWidth=1;
+  ctx.strokeRect(bX-1,bY-1,bW+2,bH+2);
+  // Indikator posisi
+  let iX;
+  if(hue<0){ iX=bX+whiteW*0.35; }
+  else { iX=Math.max(rainbowX+4,Math.min(bX+bW-4,rainbowX+(hue/360)*rainbowW)); }
+  ctx.fillStyle=rgba(hueToRgb(hue)); ctx.fillRect(iX-3,bY-4,6,bH+8);
+  ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.strokeRect(iX-4,bY-5,8,bH+10);
+  // Label atas
+  ctx.fillStyle="rgba(220,220,220,0.95)"; ctx.font="15px 'Space Grotesk',sans-serif";
+  const label=hue<0?`COLOR PICKER — Putih`:`COLOR PICKER  Hue:${hue.toFixed(0)}  ${hueToName(hue)}`;
+  ctx.fillText(label,bX,bY-12);
+  // Preview dot di ujung jari
+  ctx.beginPath(); ctx.fillStyle=rgba(hueToRgb(hue)); ctx.arc(px,py,18,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.fillStyle="rgba(220,220,220,.95)"; ctx.font="12px 'Space Grotesk',sans-serif";
+  ctx.fillText("PILIH",px-16,py+38);
+}
+
+
+function drawHoldProgress(ctx,cx,cy,prog,r=34){
+  prog=Math.max(0,Math.min(1,prog));
+  ctx.strokeStyle="rgba(70,70,70,.9)";ctx.lineWidth=3;
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.stroke();
+  ctx.strokeStyle=prog<1?"rgb(60,140,255)":"rgb(60,220,80)";ctx.lineWidth=4;
+  ctx.beginPath();ctx.arc(cx,cy,r,-Math.PI/2,-Math.PI/2+Math.PI*2*prog);ctx.stroke();
+  ctx.fillStyle="rgb(60,140,255)";ctx.font="13px 'Space Grotesk',sans-serif";
+  ctx.fillText("TAHAN DIAM",cx-42,cy+r+22);
+}
+
+function drawFlash(ctx,fw,fh,txt){
+  ctx.save();ctx.fillStyle="rgba(50,200,80,0.28)";ctx.fillRect(0,0,fw,fh);
+  ctx.fillStyle="#fff";ctx.font="bold 44px 'Space Grotesk',sans-serif";
+  ctx.textAlign="center";ctx.fillText(txt,fw/2,fh/2);ctx.textAlign="left";ctx.restore();
+}
+
+function drawHUD(ctx,col,colName,hue,gR,gL,fps,bgName,fw){
+  ctx.save();
+  function chalkTxt(text,x,y,size,color){
+    ctx.font=`${size}px 'Caveat',cursive`;
+    ctx.shadowColor="rgba(255,255,255,0.2)";
+    ctx.shadowBlur=4;
+    ctx.fillStyle=color;
+    ctx.fillText(text,x,y);
+    ctx.shadowBlur=0;
+  }
+  // Kotak warna aktif kecil, tanpa panel
+  ctx.fillStyle=rgba(col);
+  ctx.fillRect(12,14,24,24);
+  ctx.strokeStyle="rgba(255,255,255,0.5)";ctx.lineWidth=1.5;ctx.strokeRect(12,14,24,24);
+  chalkTxt(`${colName}  ${hue.toFixed(0)}°`,42,32,18,"rgba(240,235,220,0.92)");
+  chalkTxt(`Kanan: ${gR}`,12,56,16,"rgba(180,230,180,0.88)");
+  chalkTxt(`Kiri : ${gL}`,12,78,16,"rgba(180,200,255,0.88)");
+  chalkTxt(`BG: ${bgName}`,12,98,14,"rgba(160,155,140,0.65)");
+  chalkTxt(`FPS ${fps.toFixed(0)}`,fw-75,28,16,"rgba(160,155,140,0.6)");
+  ctx.restore();
+}
+
+function drawGuide(ctx,fh){
+  ctx.save();
+  function chalkTxt(text,x,y,size,color){
+    ctx.font=`${size}px 'Caveat',cursive`;
+    ctx.shadowColor="rgba(255,255,255,0.18)";
+    ctx.shadowBlur=4;
+    ctx.fillStyle=color;
+    ctx.fillText(text,x,y);
+    ctx.shadowBlur=0;
+  }
+  const rows=[
+    ["PANDUAN GESTURE","rgba(245,240,228,0.95)",20],
+    ["Kanan: 5 jari terbuka = Gambar","rgba(180,230,180,0.88)",16],
+    ["  ✌️ Kiri 2 jari tahan = Pilih Warna","rgba(180,230,180,0.88)",16],
+    ["  Geser kanan = Ganti Warna","rgba(180,230,180,0.75)",15],
+    ["Kiri: 5 jari gerak = Hapus","rgba(180,200,255,0.88)",16],
+    ["  5 jari DIAM = Clear Page","rgba(140,180,255,0.88)",16],
+    ["5+5 jari DIAM = Capture","rgba(255,220,140,0.88)",16],
+    ["B=BG  C=Bersihkan  S=Simpan","rgba(155,150,140,0.65)",14],
+  ];
+  const x0=12, y0=fh-200;
+  let y=y0;
+  for(const[t,c,s] of rows){
+    chalkTxt(t,x0,y,s,c);
+    y+=s+6;
+  }
+  ctx.restore();
+}
+
+
+
+function drawSkeleton(ctx,lm,fw,fh){
+  // ── Connections (garis tulang) ──────────────────────────────
+  // Pass 1: glow putih tipis di belakang
+  ctx.strokeStyle="rgba(255,255,255,0.18)";
+  ctx.lineWidth=6;ctx.lineJoin="round";ctx.lineCap="round";
+  for(const[a,b]of CONNECTIONS){
+    ctx.beginPath();ctx.moveTo(lm[a].x*fw,lm[a].y*fh);
+    ctx.lineTo(lm[b].x*fw,lm[b].y*fh);ctx.stroke();
+  }
+  // Pass 2: garis utama biru muda
+  ctx.strokeStyle="rgba(120,200,255,0.95)";
+  ctx.lineWidth=2.5;
+  for(const[a,b]of CONNECTIONS){
+    ctx.beginPath();ctx.moveTo(lm[a].x*fw,lm[a].y*fh);
+    ctx.lineTo(lm[b].x*fw,lm[b].y*fh);ctx.stroke();
+  }
+  // ── Joint circles ────────────────────────────────────────────
+  // Fingertips lebih besar + berwarna
+  const tips=new Set([4,8,12,16,20]);
+  const mcps=new Set([1,5,9,13,17,0]);
+  for(let i=0;i<lm.length;i++){
+    const x=lm[i].x*fw, y=lm[i].y*fh;
+    const r=tips.has(i)?6:mcps.has(i)?5:4;
+    // Shadow/glow
+    ctx.fillStyle="rgba(0,0,0,0.5)";
+    ctx.beginPath();ctx.arc(x,y,r+2,0,Math.PI*2);ctx.fill();
+    // Warna berbeda untuk fingertip vs joint biasa
+    ctx.fillStyle=tips.has(i)?"rgba(255,230,100,1)":
+                  mcps.has(i)?"rgba(180,220,255,1)":"rgba(255,255,255,0.9)";
+    ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+  }
+}
+
+/* ─── BACKGROUND ───────────────────────────────────────────────── */
+function makeBoard(w,h){
+  const c=document.createElement("canvas");c.width=w;c.height=h;
+  const ctx=c.getContext("2d");ctx.fillStyle="#234d36";ctx.fillRect(0,0,w,h);
+  for(let i=0;i<2500;i++){
+    ctx.fillStyle=`rgba(255,255,255,${Math.random()*0.04})`;
+    ctx.fillRect(Math.random()*w,Math.random()*h,1,1);
+  }
+  return c;
+}
+const backgrounds=[];let bgIdx=0;
+function loadImgFile(file){
+  return new Promise((res,rej)=>{
+    const url=URL.createObjectURL(file),img=new Image();
+    img.onload=()=>res({img,name:file.name});img.onerror=rej;img.src=url;
+  });
+}
+
+/* ─── DOM REFS ─────────────────────────────────────────────────── */
+const video=document.getElementById("webcam");
+const out=document.getElementById("outputCanvas");
+const octx=out.getContext("2d");
+const overlay=document.getElementById("overlayStatus");
+const statusText=document.getElementById("statusText");
+const statusSub=document.getElementById("statusSub");
+const dlLink=document.getElementById("downloadLink");
+
+const mirrorC=document.createElement("canvas"),mirrorCtx=mirrorC.getContext("2d");
+const drawC=document.createElement("canvas"),drawCtx=drawC.getContext("2d");
+
+let FW=1280,FH=720;
+
+/* ─── STATE ────────────────────────────────────────────────────── */
+// Default: putih seperti kapur — col TIDAK berubah sampai user benar-benar gerak di picker
+let hue=0, col=[245,245,245], colName="Putih";
+let pickerOn=false, pickerAnchorX=null, pickerAnchorHue=0;
+let pickerHoldStart=null;   // timestamp saat pinch pertama kali terdeteksi
+let pinchProgress=0, pinchMx=0, pinchMy=0;  // untuk progress arc overlay
+let prevR=null,prevL=null;
+const smR=new WMA(CONFIG.SMOOTH_BUFFER),smL=new WMA(CONFIG.SMOOTH_BUFFER);
+let lastCapture=0,flashUntil=0,flashTxt="",shotIdx=0;
+// Hold state untuk capture 5+5 jari
+let captureHoldAnchorR=null,captureHoldAnchorL=null;
+let captureHoldStart=0,captureDone=false;
+let holdAnchor=null,holdStart=0,holdDone=false;
+let gR="—",gL="—";
+let fpsBuf=[],lastT=performance.now();
+
+/* ─── SAVE ─────────────────────────────────────────────────────── */
+function doSave(){
+  const c=document.createElement("canvas");c.width=FW;c.height=FH;
+  const ctx=c.getContext("2d");
+  ctx.drawImage(backgrounds[bgIdx]?.img||makeBoard(FW,FH),0,0,FW,FH);
+  ctx.drawImage(drawC,0,0);
+  c.toBlob(blob=>{
+    const url=URL.createObjectURL(blob);
+    dlLink.href=url;dlLink.download=`airchalk_${String(shotIdx).padStart(3,"0")}.png`;
+    dlLink.click();setTimeout(()=>URL.revokeObjectURL(url),4000);shotIdx++;
+  },"image/png");
+}
+function clearAll(){
+  drawCtx.clearRect(0,0,FW,FH);prevR=null;prevL=null;smR.reset();smL.reset();
+}
+
+/* ─── CONTROLS ─────────────────────────────────────────────────── */
+document.getElementById("btnClear").onclick=clearAll;
+document.getElementById("btnSave").onclick=()=>{doSave();flashUntil=performance.now()+700;flashTxt="TERSIMPAN!";};
+document.getElementById("btnBg").onclick=()=>{if(backgrounds.length)bgIdx=(bgIdx+1)%backgrounds.length;};
+document.getElementById("bgUpload").onchange=async e=>{
+  for(const f of Array.from(e.target.files||[])){
+    try{backgrounds.push(await loadImgFile(f));}catch(err){console.warn(err);}
+  }
+  bgIdx=Math.max(0,backgrounds.length-1);e.target.value="";
+};
+window.addEventListener("keydown",e=>{
+  const k=e.key.toLowerCase();
+  if(k==="c")clearAll();
+  else if(k==="s"){doSave();flashUntil=performance.now()+700;flashTxt="TERSIMPAN!";}
+  else if(k==="b"&&backgrounds.length)bgIdx=(bgIdx+1)%backgrounds.length;
+});
+
+/* ─── INIT MEDIAPIPE ───────────────────────────────────────────── */
+let landmarker=null;
+async function init(){
+  try{
+    statusText.textContent="Memuat model MediaPipe…";
+    const vision=await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+    try{
+      landmarker=await HandLandmarker.createFromOptions(vision,{
+        baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",delegate:"GPU"},
+        runningMode:"VIDEO",numHands:2,
+        minHandDetectionConfidence:0.6,minHandPresenceConfidence:0.6,minTrackingConfidence:0.6
+      });
+    }catch{
+      landmarker=await HandLandmarker.createFromOptions(vision,{
+        baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",delegate:"CPU"},
+        runningMode:"VIDEO",numHands:2,
+        minHandDetectionConfidence:0.6,minHandPresenceConfidence:0.6,minTrackingConfidence:0.6
+      });
+    }
+    statusText.textContent="Meminta izin kamera…";
+    const stream=await navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:1280},height:{ideal:720},facingMode:"user"},audio:false
+    });
+    video.srcObject=stream;
+    await new Promise(r=>{video.onloadedmetadata=()=>{video.play();r();};});
+    FW=video.videoWidth||1280;FH=video.videoHeight||720;
+    out.width=FW;out.height=FH;mirrorC.width=FW;mirrorC.height=FH;
+    drawC.width=FW;drawC.height=FH;
+    backgrounds.push({img:makeBoard(FW,FH),name:"Papan Tulis (default)"});
+    bgIdx=0;
+    overlay.classList.add("hidden");
+    requestAnimationFrame(tick);
+  }catch(err){
+    console.error(err);
+    statusText.textContent="Gagal memuat. Lihat pesan di bawah.";
+    statusSub.innerHTML=`<b>${err.message||err}</b><br><br>Pastikan: (1) halaman dibuka via <b>http://localhost</b> atau HTTPS, (2) izin kamera diberikan, (3) browser mendukung WebAssembly.`;
+  }
+}
+
+/* ─── MAIN LOOP ────────────────────────────────────────────────── */
+function tick(){requestAnimationFrame(tick);if(video.readyState>=2&&landmarker)frame();}
+
+function frame(){
+  const now=performance.now();
+
+  // Flip horizontal (efek cermin)
+  mirrorCtx.save();mirrorCtx.scale(-1,1);mirrorCtx.drawImage(video,-FW,0,FW,FH);mirrorCtx.restore();
+
+  const res=landmarker.detectForVideo(mirrorC,now);
+
+  // FPS
+  fpsBuf.push(1000/Math.max(now-lastT,1));lastT=now;
+  if(fpsBuf.length>30)fpsBuf.shift();
+  const fps=fpsBuf.reduce((a,b)=>a+b,0)/fpsBuf.length;
+
+  let rLm=null,lLm=null;
+  if(res.landmarks?.length){
+    res.landmarks.forEach((lm,i)=>{
+      const label=res.handednesses[i][0].categoryName;
+      // Setelah cv2.flip / mirrorCtx.scale(-1,1), label MediaPipe terbalik:
+      // MediaPipe "Right" → sebenarnya tangan KIRI pengguna (dan sebaliknya)
+      if(label==="Left") rLm=lm; else lLm=lm;
+    });
+  }
+
+  const cR=rLm?fingersUp(rLm,"Right"):0;
+  const cL=lLm?fingersUp(lLm,"Left"):0;
+
+  // ── TANGAN KANAN: hitung posisi ujung telunjuk ───────────────
+  let sx=null,sy=null;
+  if(rLm){ const[rx,ry]=lmPx(rLm[INDEX_TIP],FW,FH); smR.update(rx,ry);[sx,sy]=smR.get(); }
+
+  // ── TANGAN KIRI: hitung posisi ujung telunjuk ────────────────
+  let slx=null,sly=null;
+  if(lLm){ const[lx,ly]=lmPx(lLm[INDEX_TIP],FW,FH); smL.update(lx,ly);[slx,sly]=smL.get(); }
+
+  // ── GESTURE GABUNGAN: 5+5 jari diam → CAPTURE ────────────────
+  const combo = rLm && lLm && cR===5 && cL===5;
+
+  if(combo){
+    prevR=null; prevL=null; holdAnchor=null; holdDone=false;
+    pickerHoldStart=null; pinchProgress=0;
+    if(pickerOn){ pickerOn=false; }
+    if(!captureHoldAnchorR){
+      captureHoldAnchorR=[sx??0,sy??0];
+      captureHoldAnchorL=[slx??0,sly??0];
+      captureHoldStart=now; captureDone=false;
+    }
+    const hdR=Math.hypot((sx??0)-captureHoldAnchorR[0],(sy??0)-captureHoldAnchorR[1]);
+    const hdL=Math.hypot((slx??0)-captureHoldAnchorL[0],(sly??0)-captureHoldAnchorL[1]);
+    const bothStill = hdR<=CONFIG.CAPTURE_HOLD_TOLERANCE && hdL<=CONFIG.CAPTURE_HOLD_TOLERANCE;
+    if(!bothStill){
+      captureHoldAnchorR=[sx??0,sy??0]; captureHoldAnchorL=[slx??0,sly??0];
+      captureHoldStart=now; captureDone=false;
+      gR="5+5, tahan diam…"; gL="5+5, tahan diam…";
+    } else {
+      const held=now-captureHoldStart;
+      if(captureDone){ gR="Captured! (lepas dulu)"; gL="Captured! (lepas dulu)";
+      } else if(held>=CONFIG.CAPTURE_HOLD_DURATION){
+        doSave(); captureDone=true; flashUntil=now+700; flashTxt="CAPTURED!";
+        gR="CAPTURED!"; gL="CAPTURED!";
+      } else { gR=`5+5 diam… ${(held/1000).toFixed(1)}s`; gL=gR; }
+    }
+  } else {
+    captureHoldAnchorR=null; captureHoldAnchorL=null; captureDone=false;
+
+    // ── TANGAN KIRI: 2 jari = color picker, 5 jari = hapus/clear ─
+    if(lLm && cL===2){
+      holdAnchor=null; holdDone=false; prevL=null;
+      if(pickerHoldStart===null) pickerHoldStart=now;
+      const twoHeld=now-pickerHoldStart;
+      if(twoHeld>=CONFIG.PINCH_HOLD_DURATION){
+        pickerOn=true;
+        // Mapping posisi slx langsung ke bar (putih di kiri, rainbow di kanan)
+        const barX=60, barW=FW-120, whiteW=70;
+        const rainbowX=barX+whiteW, rainbowW=barW-whiteW;
+        if((slx??rainbowX)<=rainbowX){
+          hue=-1;
+        } else {
+          hue=Math.max(0,Math.min(359,(((slx??rainbowX)-rainbowX)/rainbowW)*360));
+        }
+        col=hueToRgb(hue); colName=hueToName(hue);
+        gL=`✌️ ${colName}${hue>=0?" "+hue.toFixed(0)+"°":""}`;
+        pinchMx=slx??FW/2; pinchMy=sly??200;
+      } else {
+        pinchProgress=twoHeld/CONFIG.PINCH_HOLD_DURATION;
+        gL=`✌️ Tahan… ${(twoHeld/1000).toFixed(1)}s`;
+        pinchMx=slx??FW/2; pinchMy=sly??200;
+      }
+      // Tangan kanan tetap bisa gambar saat picker aktif
+      if(rLm){
+        if(cR>=4){
+          gR=`${cR} jari → Gambar`;
+          if(prevR) chalkLine(drawCtx,prevR,[sx,sy],col,DRAW_THICKNESS);
+          else      chalkLine(drawCtx,[sx,sy],[sx+1,sy+1],col,DRAW_THICKNESS);
+          prevR=[sx,sy];
+        } else { gR=cR>0?`${cR} jari = Idle`:"Idle"; prevR=null; smR.reset(); }
+      } else { gR="—"; prevR=null; smR.reset(); }
+
+
+    } else {
+      // Bukan 2 jari kiri → tutup picker
+      pickerHoldStart=null; pinchProgress=0;
+      if(pickerOn){ pickerOn=false; }
+
+      // Tangan kanan: 4-5 jari = gambar
+      if(rLm){
+        if(cR>=4){
+          gR=`${cR} jari → Gambar`;
+          if(prevR) chalkLine(drawCtx,prevR,[sx,sy],col,DRAW_THICKNESS);
+          else      chalkLine(drawCtx,[sx,sy],[sx+1,sy+1],col,DRAW_THICKNESS);
+          prevR=[sx,sy];
+        } else { gR=cR>0?`${cR} jari = Idle`:"Idle"; prevR=null; smR.reset(); }
+      } else { gR="—"; prevR=null; smR.reset(); }
+
+
+      // Tangan kiri: 5 jari gerak = hapus, 5 jari diam = clear
+      if(lLm){
+        if(cL===5){
+          if(!holdAnchor){holdAnchor=[slx,sly]; holdStart=now; holdDone=false;}
+          const hd=Math.hypot(slx-holdAnchor[0],sly-holdAnchor[1]);
+          if(hd<=CONFIG.CLEAR_HOLD_TOLERANCE){
+            const held=now-holdStart;
+            if(holdDone){ gL="Cleared! (lepas dulu)";
+            } else if(held>=CONFIG.CLEAR_HOLD_DURATION){
+              clearAll(); holdDone=true; flashUntil=now+700; flashTxt="PAGE CLEARED!";
+              gL="5j DIAM → CLEARED";
+            } else { gL=`Tahan diam… ${(held/1000).toFixed(1)}s`; }
+          } else {
+            holdAnchor=[slx,sly]; holdStart=now; holdDone=false;
+            gL="5 jari → Hapus";
+            chalkEraser(drawCtx,slx,sly,ERASE_RADIUS);
+          }
+          prevL=[slx,sly];
+        } else {
+          holdAnchor=null; holdDone=false;
+          gL=cL>0?`${cL} jari = Idle`:"Idle";
+          prevL=null; smL.reset();
+        }
+      } else { gL="—"; prevL=null; holdAnchor=null; holdDone=false; smL.reset(); }
+    }
+  }
+
+
+  // ── COMPOSITING ───────────────────────────────────────────────
+  const bg=backgrounds[bgIdx];
+  octx.drawImage(bg?.img||makeBoard(FW,FH),0,0,FW,FH);
+  octx.drawImage(drawC,0,0);
+  if(res.landmarks?.length) res.landmarks.forEach(lm=>drawSkeleton(octx,lm,FW,FH));
+
+  // ── UI OVERLAYS ───────────────────────────────────────────────
+  // Color picker bar — tampil saat 2 jari kiri aktif
+  if(lLm && cL===2 && pickerOn){
+    drawPickerUI(octx,FW,hue,slx??FW/2,sly??200);
+  } else if(lLm && cL===2 && !pickerOn && pinchProgress>0){
+    // Progress arc selama menunggu hold 2 jari
+    octx.save();
+    octx.beginPath();
+    octx.strokeStyle="rgba(255,220,80,0.3)";
+    octx.lineWidth=4;
+    octx.arc(pinchMx,pinchMy,26,0,Math.PI*2);
+    octx.stroke();
+    octx.beginPath();
+    octx.strokeStyle="rgba(255,220,80,0.95)";
+    octx.lineWidth=4;
+    octx.lineCap="round";
+    octx.arc(pinchMx,pinchMy,26,-Math.PI/2,-Math.PI/2+Math.PI*2*pinchProgress);
+    octx.stroke();
+    octx.fillStyle="rgba(255,220,80,0.8)";
+    octx.beginPath();
+    octx.arc(pinchMx,pinchMy,5,0,Math.PI*2);
+    octx.fill();
+    octx.restore();
+  }
+
+  // Pen cursor (tangan kanan 4-5 jari)
+  if(rLm && sx && cR>=4){
+
+
+
+
+    octx.fillStyle=rgba(col);
+    octx.beginPath(); octx.arc(sx,sy,DRAW_THICKNESS/2,0,Math.PI*2); octx.fill();
+    octx.strokeStyle="#fff"; octx.lineWidth=1.5;
+    octx.beginPath(); octx.arc(sx,sy,DRAW_THICKNESS/2+3,0,Math.PI*2); octx.stroke();
+  }
+
+  // Eraser ring (tangan kiri 5 jari)
+  if(lLm && slx && cL===5){
+    const isHolding = holdAnchor &&
+      Math.hypot(slx-holdAnchor[0],sly-holdAnchor[1])<=CONFIG.CLEAR_HOLD_TOLERANCE;
+    octx.beginPath();
+    octx.strokeStyle = isHolding ? "rgba(60,140,255,0.9)" : "rgba(80,80,220,0.85)";
+    octx.lineWidth=2.5; octx.arc(slx,sly,ERASE_RADIUS,0,Math.PI*2); octx.stroke();
+    // Progress ring saat hold clear
+    if(isHolding && !holdDone){
+      const prog=Math.min((now-holdStart)/CONFIG.CLEAR_HOLD_DURATION,1);
+      drawHoldProgress(octx,slx,sly,prog);
+    }
+  }
+
+  // Progress ring capture (kedua tangan)
+  if(combo && captureHoldAnchorR && !captureDone){
+    const prog=Math.min((now-captureHoldStart)/CONFIG.CAPTURE_HOLD_DURATION,1);
+    if(sx&&sy)   drawHoldProgress(octx,sx,sy,prog,28);
+    if(slx&&sly) drawHoldProgress(octx,slx,sly,prog,28);
+  }
+
+  if(now<flashUntil) drawFlash(octx,FW,FH,flashTxt);
+  drawHUD(octx,col,colName,hue,gR,gL,fps,bg?.name||"—",FW);
+  drawGuide(octx,FH);
+}
+
+init();
+</script>
+</body>
+</html>
